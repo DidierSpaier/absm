@@ -72,9 +72,9 @@ from the snapshot taken before restoration.
 
 To access the snapshots, type as root:
     `mount <root device> /mnt -o subvolid=0`
-The snapshots are in /mnt/SNAP_DIR, with their creation's date as name, and the log
+The snapshots are in /mnt/$SNAP_DIR, with their creation's date as name, and the log
 is /mnt/log. Do not to modify the content of a snapshot, so copy files from a
-snapshot to the restored system, not the other way round.
+snapshot to the restored system, not the other way round. By defaut SNAP-DIR="snapshots-manager".
 
 TODO
 
