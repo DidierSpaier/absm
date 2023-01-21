@@ -8,7 +8,7 @@ intended to allow booting and restoring a system in its previous state if can't 
 work as expected otherwise. The "on demand" boot entries are associated with a hot key bearing their
 number (most recent first) so users can just press this key to boot a wanted snapshot.
 
-Each snapshot bears as name its creation date, and all creations, deletions and restorations
+Each snapshot bears as as name its creation date, and all creations, deletions and restorations
 are logged.
 
 `absm` allows to rescue a system damaged because of a faulty update or a
@@ -16,7 +16,7 @@ user error, booting off a snapshot taken before the incident from the GRUB boot
 menu.
 
 The snapshots can be created on demand running the script on the command line,
-or by another script running it to create snapshots upon events like after
+or by another script (that you will need to write) running `absm c` to create snapshots unattended upon events like after
 booting or before a package update, or periodically through a cron job.
 
 WARNING AND LIMITATIONS
@@ -35,7 +35,11 @@ REQUIREMENTS
 * GRUB should be the boot loader and manager in use.
 * It is expected that the "core" system (including directories like /, /usr, /bin, /sbin, /etc, /lib*) be mounted in /etc/fstab as a subvolume, with Copy On Write (COW) enabled and the option "subvol=..."
 * Directories that you do not want to include in the snapshots should be in their separate subvolumes, and not in the core system's subvolume (flat layout).
-* The w3m browser/pager is recommended, especially to users relying on a braille device or a screen reader. 
+* The w3m browser/pager is recommended, especially to users relying on a braille device or a screen reader.
+
+`absm` has been tested on several distributions: Slint-15.0, Ubuntu-22.04.1, Mint-21.1-cinnamon, Garuda-lxqt-22.10.19, Manjaro-xfce-22.0-221224, Endeavour OS_Cassini_22_12 and Fedora-Workstation-37-1.7.
+
+Please let us know posting an issue if you have tried it in another one and the outcome of this test.
 
 INSTALLATION
 
@@ -79,5 +83,5 @@ snapshot to the restored system, not the other way round. By defaut SNAP_DIR="sn
 TODO
 
 * Provide an "How to" to create from scripts periodic or upon event snapshots.
-* provide an how-to to compare the content of subvolumes and copy files and directories
+* Provide an how-to to compare the content of subvolumes and copy files and directories
 from a snapshot to a running system. 
