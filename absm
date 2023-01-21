@@ -46,13 +46,10 @@
 # shellcheck source=/dev/null
 #-------------------------------------------------------------------------------------------------#
 
-# The values of SNAP_DIR and ROOT_SUBVOL below are those used for Slint 15.0
-# For another distribution you may (need to) adapt them, knowing that:
-# We name "root subvolume" the one that hosts the core system. We assume that it does not include
-# then /home directory, although it be not strictly mandatory, just advisable.
-# SNAP_DIR is the directory where the snapshots are stored. It is assumed to be in the same
-# volume as the root subvolume ROOT_SUBVOL. It can be a subvolume but not nested in another
-# subvolume, especially not in ROOT_VOL.
+# You may modify the value, of the variable SNAPDIR below. IT is the directory and subvolume
+# where the snapshots are stored. It should be in the same volume as the root subvolume, that hosts
+# the core system directories and not be nested in another subvolume, especially not in the root
+# subvolume.
 
 # You may name SNAP_DIR as you like but please do *not* create this directory, that will host all
 # our files including the snapshots. 
@@ -275,6 +272,13 @@ write_boot_entries() {
 		. "$i"
 		SNAP_NUMBER=$((SNAP_NUMBER + 1))
 		if [ "$INITRAMFS" ]; then
+			# If the patch to the kernel in /proc/cmdline includes a prefix after "linux" and
+			# before / we need to include it also in the path to the initramfs, as we assume that
+			# they live in the same directory. This can happen for instance is /boot is in its own
+			# partition with an ext4 file system, as in Fedora 37.
+			INITRD_PREFIX="/$SNAP_DIR/$SNAP_NAME/boot"
+			KERNEL_PREFIX="$(echo "$CMDLINE"|cut -d/ -f1)"
+			[ "$KERNEL_PREFIX" ] && INITRD_PREFIX="$KERNEL_PREFIX"
 			cat<<-eof>>/boot/"$GRUB"/snapshots.cfg
 			menuentry 'snapshot $SNAP_NUMBER from $SNAP_NAME (${SNAP_SHORT_DESC})' --hotkey=$SNAP_NUMBER {
 				insmod part_gpt
@@ -284,7 +288,7 @@ write_boot_entries() {
 				echo 'Loading kernel: $KVER ...'
 				linux $CMDLINE
 				echo 'Loading initramfs: $INITRAMFS ...'
-				initrd /$SNAP_DIR/$SNAP_NAME/boot/$INITRAMFS
+				initrd $INITRD_PREFIX/$INITRAMFS
 			}
 			eof
 		else
@@ -303,8 +307,8 @@ write_boot_entries() {
 }
 display_grub_menu() {
 	# We write in list_boot_entries the description of each boot entry listed in
-	# /boot/$GRUB/grub.cfg and case occurring /boot/$GRUB/snapshots.cfg. We append a text indicating
-	# how to reach a given boot entry.
+	# /boot/$GRUB/grub.cfg and case occurring /boot/$GRUB/snapshots.cfg. We append a text
+	# indicating how to reach a given boot entry.
 	# The file $list_boot_entries, is then displayed (in w3m, used as a pager, if available).
 	clear
 	epoch1=$(epoch_time)
@@ -542,7 +546,6 @@ restore_any_snapshot() {
 						# restored snapshot. First remove its obsolete metadata.
 						rm "$MOUNTPOINT"/"$SNAP_DIR"/meta/"$SNAP_NAME"
 						write_boot_entries
-					#	cp -f /boot/"$GRUB"/snapshots.cfg "$MOUNTPOINT"/"$ROOT_SUBVOL"/boot/$GRUB
 						echo "The snapshot $SNAP_DIR/$SNAP_NAME has been restored."
 						echo "We recommend that you reboot now and in any case do not create,"
 						echo  "delete or restore a snapshot before rebooting."
@@ -582,7 +585,6 @@ restore_any_snapshot() {
 		esac
 	done
 }
-
 restore_me() {
 	SNAP_NAME="$RUNNING_SNAPSHOT"
 	echo "Are you sure that you want to restore the snapshot dated $SNAP_NAME?"
@@ -604,7 +606,6 @@ restore_me() {
 				# restored snapshot. First remove its obsolete metadata.
 				rm "$MOUNTPOINT"/"$SNAP_DIR"/meta/"$SNAP_NAME"
 				write_boot_entries
-			#	cp /boot/"$GRUB"/snapshots.cfg "$MOUNTPOINT"/"$ROOT_SUBVOL"/boot/"$GRUB"
 				echo "The snapshot $SNAP_DIR/$SNAP_NAME has been restored."
 				log_this "snapshot $SNAP_DIR/$SNAP_NAME restored."
 				echo "We recommend that you reboot now and in any case do not create,"
@@ -647,7 +648,6 @@ information() {
 closing() {
 	clean_metadata
 	unset_mount_point
-	rm -f 
 	trap - INT
 	exit
 }
@@ -656,7 +656,7 @@ menu () {
 	# From a snapshot we do not allow to create or delete a snapshot, or to restore another
 	# snashot than the one in use.
 	IS_SNAP=$(grep -s "$SNAP_DIR" /proc/cmdline)
-	[ "$IS_SNAP" ] && RUNNING_SNAPSHOT=$(sed "s| .*||;s|.*$SNAP_DIR/*||;s|/.*||" /proc/cmdline)
+	[ "$IS_SNAP" ] && RUNNING_SNAPSHOT=$(sed "s|.*subvol=$SNAP_DIR/||;s|[ ].*||" /proc/cmdline)
 	# After having restored a snapshot we do not allow to create or delete or restore a
 	# until after a reboot. We write an indicator in /run for that, so it will vanish
 	# after a reboot.
@@ -665,7 +665,6 @@ menu () {
 	write_boot_entries
 	echo "Welcome to the $OS_NAME snapshots manager."
 	echo
-	# Before restoring a snapshot we create another one.
 	while true; do
 		echo "To choose an action, press one of the letters indicated below then Enter:"
 		[ -f /boot/"$GRUB"/snapshots.cfg ] && echo "L: List the snapshots."
@@ -709,23 +708,6 @@ case "$arg1" in
 	write_grub_hook
 	write_usage
 	menu;;
-r|R)
-	check_specs
-	set_paths
-	IS_SNAP=$(grep -s "$SNAP_DIR" /proc/cmdline)
-	[ "$IS_SNAP" ] && RUNNING_SNAPSHOT=$(sed "s| .*||;s|.*$SNAP_DIR/*||;s|/.*||" /proc/cmdline)
-	if [ ! "$IS_SNAP" ]; then
-		echo "The running system doesn't look like a snapshots."
-		echo "to restore a non-running snapshot, just type $0."
-		closing
-	elif [ ! "$RESTORED" ]; then
-		restore_me
-		closing
-	else
-		echo "You have already restored a snapshot during this session."
-		echo "Before restoring another one you need to reboot."
-		closing
-	fi;;
 c|C)
 	check_specs
 	set_paths
