@@ -8,7 +8,7 @@ intended to allow booting and restoring a system in its previous state if can't 
 work as expected otherwise. The "on demand" boot entries are associated with a hot key bearing their
 number (most recent first) so users can just press this key to boot a wanted snapshot.
 
-Each snapshot bears as as name its creation date, and all creations, deletions and restorations
+Each snapshot bears as name its creation date, and all creations, deletions and restorations
 are logged.
 
 `absm` allows to rescue a system damaged because of a faulty update or a
