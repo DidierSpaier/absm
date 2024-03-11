@@ -57,11 +57,11 @@ SNAP_DIR="snapshots-manager"
 
 #------ No edit should be necessary beyond this line ---------------------------------------------#
 
-ROOT_SUBVOL="$(grep ' / ' /etc/fstab |sed '
-/#/d
-s|.*subvol=||
-s|[, ].*||')"
-
+ROOT_SUBVOL="$(findmnt -no source /|sed "s@.*/@@;s@]@@")"
+# TODO: write another script to manage snapshots of /home GRUB not involved then).
+# The aim would be to recover a deleted file, or the previous state of a file,
+# rather than restoring the subvolume.
+#HOME_SUBVOL="$(findmnt -no source /home|sed "s@.*/@@;s@]@@")"
 OS_NAME=$(grep "^NAME" /etc/os-release|cut -d"=" -f2)
 
 # The boot entries for the snapshots should be updated after a creation, deletion or restoration.
@@ -88,6 +88,7 @@ log_this() {
 # Initialization
 #
 check_specs() {
+	[ "$(id -u)" -ne 0 ] && echo "Please run this program as root or using sudo." && exit
 	MISSING=/run/$(epoch_time)
 	while true; do
 		unset GRUB
@@ -100,14 +101,15 @@ check_specs() {
 		fi
 		[ ! -f /boot/"$GRUB"/grub.cfg  ] && echo "You need to generate /boot/$GRUB/grub.cfg first." >> "$MISSING"
 		! command -v btrfs 1>/dev/null && echo "btrfs-progs is missing." >> "$MISSING" && break
-		[ "$(id -u)" -ne 0 ] && echo "Please run this program as root or using sudo." >> "$MISSING" && break
 		break
 	done
 	[ -s "$MISSING" ] && echo "Some actions or software are needed:" && cat "$MISSING" && rm -f "$MISSING" && exit
 	rm -f "$MISSING"
 	# w3m is a very accessible to the blind browser and pager.
-	# We use it if available to allow navigating in an output, else just display it with cat.
+	# We use it if available to allow navigating in an output, else use less is availabled,
+	# else just display it with cat.
 	HAVE_W3M=$(command -v w3m)
+	HAVE_LESS=$(command -v less)
 }
 set_paths() {
 	# All snapshots taken will be stored in "$MOUNTPOINT"/"$SNAP_DIR", named $(current_time) and
@@ -168,7 +170,8 @@ write_usage() {
 		. Restore a snapshot (put the system back in a previous state).
 		. List the existing snapshots.
 		. Display the GRUB boot menu including the snapshots, as it will appear after
-		  a reboot.
+		  a reboot. Note: in some cases le menu displayed can diffre from the one
+		  appearing after a reboot.
 		. Display the information you are reading.
 		. View the log of creations, deletions and restorations of snapshots. 
 		
@@ -202,11 +205,16 @@ write_usage() {
 usage() {
 	clear
 	if [ "$HAVE_W3M" ]; then
+		echo >> "$snapshotsusage" 
 		echo "Press q to go back to the menu." >> "$snapshotsusage"
 		w3m -o confirm_qq=false "$snapshotsusage"
+	elif [ "$HAVE_LESS" ]; then
+		echo >> "$snapshotsusage" 
+		echo "Press q to go back to the menu." >> "$snapshotsusage"
+		less "$snapshotsusage"
 	else
 		cat "$snapshotsusage"
-		printf "Press Enter to go back to the menu: "
+		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
 	clear
@@ -249,7 +257,7 @@ write_metadata() {
 	[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/"$SNAP_DIR"/meta/"$META_NAME"
 }
 clean_metadata() {
-	# All records in "$MOUNTPOINT"/"$SNAP_DIR"/meta/ should matches a snapshot.
+	# All records in "$MOUNTPOINT"/"$SNAP_DIR"/meta/ should match a snapshot.
 	[ ! "$(find "$MOUNTPOINT"/"$SNAP_DIR"/meta -type f)" ] && return
 	for i in "$MOUNTPOINT"/"$SNAP_DIR"/meta/*; do
 		[ ! -d "$(echo "$i"|sed "s|/meta||")" ] && rm "$i"
@@ -315,10 +323,17 @@ display_grub_menu() {
 	epoch2=$((epoch1 + 1))
 	listbootentries=/run/$epoch1
 	listsnapshots=/run/$epoch2
-	sed -n "/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p" /boot/"$GRUB"/grub.cfg > "$listbootentries"
-	[ -f /boot/$GRUB/snapshots.cfg ] && sed -n "/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p" /boot/"$GRUB"/snapshots.cfg  >> "$listsnapshots"
-	if [ -s "$listsnapshots" ]; then
-		cat "$listsnapshots" >> "$listbootentries"
+	sed -n "{
+		/submenu/,/^}$/ {
+		/^[[:space:]]*submenu /s%[[:space:]]*[^']*'\([^']*\)'.*%\1%p
+		/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%  \1%p
+		}
+		/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p
+	}" /boot/grub/grub.cfg >> "$listbootentries"
+	for i in $(find /boot/grub/* -prune -name "*.cfg"|grep -v grub.cfg); do
+		sed -n "/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p" "$i" >> "$listbootentries"
+	done
+	if grep -q snapshot "$listbootentries"; then
 		SNAP="
 To boot directly a snapshot, you will just press the key bearing its number.
 The snapshot number 1 is the most recent.
@@ -329,14 +344,18 @@ After booting, the boot menu will be displayed as above.
 
 To navigate in the menu you will use the down and up arrow keys,
 then press Enter to use the selected boot entry.
+To display the boot entries inside a submenu, select it then press Enter.
 $SNAP" >> "$listbootentries"
 	if [ "$HAVE_W3M" ]; then
-		echo "Press q to go back to the menu." >> "$listbootentries"
+		qecho "Press q to go back to the menu." >> "$listbootentries"
 		w3m -o confirm_qq=false "$listbootentries"
+	elif [ "$HAVE_LESS" ]; then
+		echo "Press q to go back to the menu." >> "$listbootentries"
+		less "$listbootentries"
 	else
 		cat "$listbootentries"
 		echo
-		printf "Press Enter to go back to the menu: "
+		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
 	rm "$listbootentries"
@@ -350,10 +369,16 @@ view_the_log() {
 		w3m -o confirm_qq=false "$LOGFILE"
 		sed  '/^$/d;$d' "$LOGFILE" > bof
 		mv bof "$LOGFILE"
+	elif [ "$HAVE_LESS" ]; then
+		echo >> "$LOGFILE"
+		echo "Press q to go back to the menu." >> "$LOGFILE"
+		less "$LOGFILE"
+		sed  '/^$/d;$d' "$LOGFILE" > bof
+		mv bof "$LOGFILE"
 	else
-		cat "$$LOGFILE"
+		cat "$LOGFILE"
 		echo
-		printf "Press Enter to go back to the menu: "
+		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
 	menu
@@ -376,7 +401,7 @@ create_snapshot() {
 		if [ ! "$(to_lower "$arg1")" = "c" ]; then
 			echo "The running kernel was not found in /boot."
 			echo "thus we can not create a snapshot using it."
-			printf "Press Enter to go back to the menu: "
+			printf "Press Enter to go back to the menu "
 			read -r ANSWER
 			menu
 		else
@@ -394,7 +419,7 @@ create_snapshot() {
 		rm "$MOUNTPOINT"/"$SNAP_DIR"/meta/"$SNAP_NAME"
 		if [ ! "$(to_lower "$arg1")" = "c" ]; then
 			echo "snapshot creation failed"
-			printf "Press Enter to go back to the menu: "
+			printf "Press Enter to go back to the menu "
 			read -r ANSWER
 			menu
 		else
@@ -411,7 +436,7 @@ create_snapshot() {
 			echo "A snapshot has been created."
 			echo "to display the layout of the GRUB boot menu including this snapshot"
 			echo "select \"Display GRUB's boot menu\" in the menu."
-			printf "Press Enter to go back to the menu: "
+			printf "Press Enter to go back to the menu "
 			read -r ANSWER
 			menu
 		else
@@ -444,9 +469,12 @@ list_snapshots() {
 	if [ "$HAVE_W3M" ]; then
 		echo "Press q to go back to the menu." >> "$listsnapshots"
 		w3m -o confirm_qq=false "$listsnapshots"
+	elif [ "$HAVE_LESS" ]; then
+		echo "Press q to go back to the menu." >> "$listsnapshots"
+		less "$listsnapshots"
 	else
 		cat "$listsnapshots"
-		printf "Press Enter to go back to the menu: "
+		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
 	rm "$listsnapshots"
@@ -495,7 +523,7 @@ delete_snapshot() {
 		write_boot_entries
 		rm "$numberedsnapshots"
 		log_this "snapshot $SNAP_DIR/$SNAP_NAME deleted."
-		printf "Press Enter to go back to the menu: "
+		printf "Press Enter to go back to the menu "
 		read -r
 		menu
 	else
@@ -575,7 +603,7 @@ restore_any_snapshot() {
 					log_this "As making a new snapshot of the root subvolume failed,"
 					log_this "it can't be replaced by the snapshot taken on $SNAP_NAME"
 				fi
-				printf "Press Enter to go back to the menu: "
+				printf "Press Enter to go back to the menu "
 				read -r
 				rm "$numberedsnapshots"
 				menu;;
