@@ -103,8 +103,14 @@ check_specs() {
 		! command -v btrfs 1>/dev/null && echo "btrfs-progs is missing." >> "$MISSING" && break
 		break
 	done
-	[ -s "$MISSING" ] && echo "Some actions or software are needed:" && cat "$MISSING" && rm -f "$MISSING" && exit
-	rm -f "$MISSING"
+	if [ -s "$MISSING" ]; then
+		echo "Some actions or software are needed:"
+		cat "$MISSING"
+		echo
+		print "Press Enter after having read this message. "
+		read -r
+		rm -f "$MISSING"
+	fi
 	# w3m is a very accessible to the blind browser and pager.
 	# We use it if available to allow navigating in an output, else use less is available,
 	# else just display it with cat.
