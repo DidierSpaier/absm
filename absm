@@ -107,7 +107,7 @@ check_specs() {
 		echo "Some actions or software are needed:"
 		cat "$MISSING"
 		echo
-		print "Press Enter after having read this message. "
+		printf "Press Enter after having read this message. "
 		read -r
 		rm -f "$MISSING"
 	fi
