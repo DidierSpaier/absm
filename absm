@@ -879,7 +879,7 @@ menu() {
 	unset RESTORED
 	[ -f /run/restored_snapshot ] && RESTORED="yes"
 	write_snapshots_cfg
-	echo "Welcome to the $OS_NAME snapshots manager."
+	echo "Welcome to the absm snapshots manager."
 	echo
 	while true; do
 		echo "To choose an action, press one of the letters indicated below then Enter:"
