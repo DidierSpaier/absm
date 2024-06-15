@@ -150,8 +150,8 @@ write_features() {
 	mounted as /, allowing ou to boot off one of them from the GRUB boot menu,
 	and also to rollback the system restoring one of them.
 
-	It requires that the / and /home dircetories be mounted as btrfs subvolumes.
-	Currently it takes snapshots of / as a whole, exclduing /home.
+	It requires that the / and /home directories be mounted as btrfs subvolumes.
+	Currently it takes snapshots of / as a whole, excluding /home.
 	
 	The snapshots can be taken on demand by running the script on the command 
 	line, or by another script that runs it to take snapshots upon events such as
