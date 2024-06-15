@@ -45,6 +45,10 @@
 # The directive below for https://www.shellcheck.net/wiki/SC1090 -- ShellCheck can't follow non-const...
 # shellcheck source=/dev/null
 
+# Last change: build the list of snapshots .snapshots/snsphots.cfg after each modification and in
+# copy it in all snapshots and in the root subvolume.
+
+
 #------ No edit should be necessary beyond this line ---------------------------------------------#
 
 ROOT_SUBVOL="$(grep ' / ' /etc/fstab|sed 's;.*subvol=;;;s;,.*;;')"
@@ -64,24 +68,15 @@ trap "" INT
 to_lower() {
 	echo "$1"|tr '[:upper:]' '[:lower:]'
 }
-epoch_time() {
-	date +%s
-}
-# Separate the date and time using a non-breaking space (U+00A0) so that the current time
-# be a single word.
-current_time() {
-	date "+%Y-%m-%d:%Hh%M"
-}
 log() {
-	currenttime=$(current_time)
-	printf %b "$currenttime ${1}\n" >> "$LOGFILE"
+	printf %b "$(date "+%Y-%m-%d:%Hh%Mm%Ss") ${1}\n" >> "$LOGFILE"
 }
 #
 # Initialization
 #
 check_specs() {
 	[ "$(id -u)" -ne 0 ] && echo "Please run this program as root or using sudo." && exit
-	MISSING=/run/$(epoch_time)
+	MISSING=/run/$(date +%s)
 	while true; do
 		unset GRUB
 		if command -v grub-install 1>/dev/null ; then
@@ -94,6 +89,9 @@ check_specs() {
 		[ ! -f /boot/"$GRUB"/grub.cfg  ] && echo "You need to generate /boot/$GRUB/grub.cfg first." >> "$MISSING"
 		if ! findmnt / -no FSTYPE|grep -q btrfs; then
 			echo "The root partition does not contain a btrfs file system." >> "$MISSING" && break
+		fi
+		if ! findmnt /|grep -q "subvol="; then
+			echo "The root partition is not mounted as a subvolume" >> "$MISSING" && break
 		fi
 		! command -v btrfs 1>/dev/null && echo "btrfs-progs is missing." >> "$MISSING" && break
 		break
@@ -114,11 +112,12 @@ check_specs() {
 	HAVE_LESS=$(command -v less)
 }
 set_paths() {
-	# All snapshots taken will be stored in "$MOUNTPOINT"/.snapshots, named $(current_time) and
+	# All snapshots taken will be stored in "$MOUNTPOINT"/.snapshots, named $(date +%Y-%m-%d:%Hh%Mm%Ss) and
 	# the associated metadata (used to build a boot entry for each) stored in a file bearing the
-	# same name in "$MOUNTPOINT"/.snapshots/ $(current_time)/var/lib/snapshot_metadata.
+	# same name in "$MOUNTPOINT"/.snapshots/ $(date +%Y-%m-%d:%Hh%Mm%Ss)/var/lib/snapshot_metadata.
 	# "$MOUNTPOINT"/.snapshots is created on top of the volume and created if need be.
-	MOUNTPOINT=$(mktemp -d)
+	MOUNTPOINT=/run/$(date +%s)
+	mkdir "$MOUNTPOINT"
 	ROOTDEV=$(df --output=source,target|grep /$|cut -d" " -f1)
 	mount "$ROOTDEV" "$MOUNTPOINT" -o subvolid=0
 	LOGFILE="$MOUNTPOINT"/.snapshots/log
@@ -144,55 +143,53 @@ fi
 ! grep -q snapshots.cfg  /boot/$GRUB/grub.cfg && echo "You need to regenerate /boot/$GRUB/grub.cfg before using this program." && closing
 }
 write_features() {
-	temps=$(epoch_time)
-	features=/run/"$temps"
-	cat <<-EOF> "$features"
+	cat <<-EOF> "$MOUNTPOINT/features"
 	PRESENTATION
 	
-	This script allows to take snapshots of the root subvolume of a system
-	mounted as /, allowing to boot off one of them from the GRUB boot menu,
+	This script allows you to take snapshots of the root subvolume of a system
+	mounted as /, allowing ou to boot off one of them from the GRUB boot menu,
 	and also to rollback the system restoring one of them.
 
-	It require that the directories / and /home be mounted as btrfs subvolumes.
-	Currently it takes snapshots of / as a whole, /home excluded.
+	It requires that the / and /home dircetories be mounted as btrfs subvolumes.
+	Currently it takes snapshots of / as a whole, exclduing /home.
 	
-	The snapshots can be created on demand running the script on the command line,
-	or by another script running it to create snapshots upon events like after
-	booting or before a package update, or periodically through a cron job.
+	The snapshots can be taken on demand by running the script on the command 
+	line, or by another script that runs it to take snapshots upon events such as
+	after boot or before a package update, or periodically through a cron job.
 
 	WARNING
-	As the snashots are stored in the same file system as the root subvolume, this
+	As the snapshots are stored in the same file system as the root subvolume, this
 	script does not protect against a hardware failure. This is not a backup tool!
 	For that you could use btrbk, that can make incremental backups of / and /home
 	using btrfs features.
 	
 	FEATURES
-	If run without argument, this command starts by making some checks, then if
-	successful greets the user in a menu with entries allowing to:
+	When run without argument, this command starts by performing some checks, then
+	if successful greets the user in a menu of items that allow to:
 	. Create a snapshot.
 	. Delete a snapshot.
 	. Rollback the system to a previous state, recorded in a snapshot.
 	. List the existing snapshots.
-	. Display the GRUB boot menu including the snapshots, as it will appear after
-	  a reboot. Note: in some cases the menu displayed can differ from the one
-	  appearing after a reboot.
+	. Display the GRUB boot menu including the snapshots, as it will appear at
+	  the next boot. Note: in some cases the menu displayed may be different from
+	  the one that will appear at next boot.
 	. Display this file.
-	. Display how to use snapshots and manage rollbacks.
+	. Show how to use snapshots and manage rollbacks.
 	. View the log of creations, deletions and restorations of snapshots.
 	
-	The menu is context-driven: it does not propose to delete, list or restore
-	snapshots is there is none. If run from a snapshot it only allows to display
-	the GRUB boot menu or restore this snapshot.
+	The menu is contextual: it does not offer to delete, list or restore snapshots
+	if none exist. When running from a snapshot it will only allows to display
+	the GRUB boot menu or restore that snapshot.
 	
-	All creations, deletions and restorations of snapshots are logged.
+	All snapshot creations, deletions and recoveries are logged.
 	
-	The command "absm c" creates a new snasphot unattended, usually from a script.
-	Then if the variable SHORTDESC is set, its value is displayed in the entry for
-	this snapshot in the GRUB boot menu. If the variable LONGDESC is set it is
-	displayed in the log.
+	The "absm c" command creates a new snapshot unattended, usually from a script.
+	If the SHORTDESC variable is set, its value is displayed in the entry for
+	this snapshot in the GRUB boot menu. If the LONGDESC variable is set, it will
+	be displayed in the log.
 	
-	A new snapshot can be taken just before a rollback of the system so that it
-	can be reverted.
+	A new snapshot is taken just before a rollback to enable it to be rolled back.
+	This is optional if the snapshot being rolled back is running.
 
 	LINKS
 	https://btrfs.readthedocs.io/en/latest/
@@ -200,106 +197,107 @@ write_features() {
 	EOF
 }
 write_rollbacks() {
-	rollbacks=/run/$((temps + 1))
-	cat <<-EOF> "$rollbacks"
+	cat <<-EOF> "$MOUNTPOINT/rollbacks"
 	HOW-TO USE SNAPSHOTS AND MANAGE ROLLBACKS
 
-	You can use snapshots to gather from one of them files or directories to replace
-	ones accidentally deleted or damaged, or to rollback the system to a previous
-	state, if it is the only or easiest way to repair it.
+	You can use snapshots to collect files or directories from one of them to
+	replace those that have been accidentally deleted or corrupted, or to rollback
+	the system to a previous, if this is the only or easiest way to repair it.
 
-	Restoring a snapshot triggers a global rollback of the system (/home 	excluded)
-	including files that should stay up to date, like databases or web servers.
+	Restoring a snapshot triggers a global rollback of the system, excluding /home,
+	including files that should kept up to date, such as databases or web servers.
 
-	For this reason, just after a rollback it may also be necessary to replace
-	files by up to date ones stored in the snapshot taken just before the rollback,
-	even more so if the restored snapshot was old. Alternatively you can decide to
-	exclude from the snapshots directories containing files that should be kept
-	up to date, provided that they be not part of the core system.
+	For this reason, immediately after a rollback it may also be necessary to
+	replace files wityh up to date ones stored in the snapshot taken just before
+	the rollback, especially if the restored snapshot was old. Alternatively you
+	can exclude from the snapshots directories containing files that should 
+	be kept up to date, provided that they are part of the core system.
 	
-	SELECTIVELY REPLACE FILES OR DIRECTORIES BY UP TO DATE ONES
+	SELECTIVELY REPLACING FILES OR DIRECTORIES WITH CURRENT ONES
 
-	This can be done at any time, including just after a rollback.
+	This can be done at any time, even immediately after a rollback.
 	
-	If done after a rollback we recommend that you do the rollback, restoring a
-	snapshot, then immediately reboot so that the system be in a clean state,
-	and only then do the needed replacements.
+	If done after a rollback we recommend that you perform the rollback,
+	then immediately reboot so that the system be in a clean state,
+	and only then perform the necessary replacements.
 	
 	You will need to identify the new snapshot taken just before the rollback,
-	case occurring, more generally the most recent one, from which you will copy
-	files or directories into the running system as necessary.
+	in this case the most recent one, from which you will copy files or
+	directories into the running system as required.
 
-	To do that, just run this script and choose "list the snapshots."
+	To do this, simply run this script and choose "list the snapshots."
 	Example of output below:
 	
 	List of the snapshots in your Slint system:
-	snapshot 1 [2024-05-14:22h10] (before restoration of 2024-05-08:21h20)
-	snapshot 2 [2024-05-13:21h26] (with extra and testing)
-	snapshot 3 [2024-05-08:21h42] (with extra but not testing)
+	snapshot 1 [2024-05-14:22h10m10s] (before restoring from 2024-05-08:21h20m15s)
+	snapshot 2 [2024-05-13:21h26m27s] (with extra and testing)
+	snapshot 3 [2024-05-08:21h42m12s] (with extra but not testing)
 	
-	The snapshot 1, dated 2024-05-14:22h10, is the most recent.
+	Snapshot 1, dated 2024-05-14:22h10, is the most recent.
 	
 	To access it, first mount the root partition (/dev/sda3 in the example
 	below) at the top level of the btrfs volume, like this (as root):
 	root[~]# mount /dev/sda3 /mnt
 
-	The snapshots are stored  in the directory /mnt/.snapshots, named
+	The snapshots are stored  in the /mnt/.snapshots directory, named
 	by their date, so the path to the snapshot 1 is:
-	/mnt/.snapshots/2024-05-14:22h10
+	/mnt/.snapshots/2024-05-14:22h10m10s
 	
-	You can view a file in it, for instance /etc/fstab, typing:
-	cat /mnt/.snapshots/2024-05-14:22h10/etc/fstab
+	You can view a file in it, e.g. /etc/fstab, by typing:
+	cat /mnt/.snapshots/2024-05-14:22h10m10s/etc/fstab
 	and compare with the older version you have restored typing:
 	cat /etc/fstab
 	
 	Then you can either edit the file in the running system or copy the one
 	from the snapshot into the running system.
 	
-	You can also copy whole directories. For instance to fastly copy the whole
-	/var directory you can type as root:
+	You can also copy entire directories. For example to fastly copy the entire
+	/var directory, as root you can type:
 	mv /var /var.bak
-	cp -a --reflink=always /mnt/.snapshots/2024-05-14:22h10/var  /
+	cp -a --reflink=always /mnt/.snapshots/2024-05-14:22h10m10s/var  /
 	# Now, check the content of /var.  if OK type:
 	rm -r /var.bak
 
 	EXCLUDE DIRECTORIES FROM THE SNAPSHOTS
-
-	NOTE: The options of the mount commands below could need adaptations
-	to the system or distribution in use. Looking at the mount options
-	of / in /etc/fsab can give a clue on that.
 	
-	WARNING: Be careful not to exclude directories that are part of or
-	should stay in sync with the core system. As an example the log of
-	installed package, stored in /var/lib/pkgtools in Slackware, should
-	not be excluded as this would break the packages management system. 
+	WARNING: Be careful not to exclude directories which are part of the core
+	system, or should stay in sync. For example the installed package log 
+	stored in /var/lib/pkgtools in Slackware, should not be excluded as this
+	would break the package management system. 
 	
-	Let's assume that you to want to exclude from snapshots the
-	directory /opt. If not already done, type as root:
+	Let's assume that you to want to exclude the /opt directory from snapshots. 
+	directory /opt. If you have not already done so log as root, then type:
 	root[~]# mount /dev/sda3 /mnt
+
+	NOTE: The mount command options may need to be adjusted to suit your system
+	or distribution. Looking at the mount options of / in /etc/fsab an give you
+	an idea. Also, excluding the /opt directory could make it out of sync with
+	the packages management system so take this is as an example.
 	
 	Then, still as root create a subvolume for /opt:
 	btrfs subvol create /mnt/@opt
 	
-	Copy all the content of /opt into this subvolume:
+	Copy all the contentd of /opt to this subvolume:
 	cp -a --reflink=always /opt/* /mnt/@opt
 
 	Backup /opt, just in case.
 	mv /opt /opt.bak
 	mkdir /opt
 	
-	Now mount /opt as a subvolume. For instance:
-	mount /dev/sda3 /opt -o subvol=@opt,compress=zstd:3,discard=async,noatime
+	Now mount /opt as a subvolume. For example:
+	mount /dev/sda3 /opt -o subvol=@opt,compress=zstd,discard=async,noatime
 
-	Now, check carefully the content of /opt. Only if and when OK type:
+	Check carefully the content of /opt. If and if it is OK type:
 	rm -r opt.bak
 
-	To have /opt mounted at each boot, as now needed, append this line to /etc/fstab:
-	UUID=<uuid of / > /opt brfs subvol=@opt,compress=zstd:3,discard=async,noatime 0 0
+	To have /opt mounted on every boot, as now needed, append this line to
+	/etc/fstab:
+	UUID=<uuid of /> /opt brfs subvol=@opt,compress=zstd,discard=async,noatime 0 0
 	
-	Do not forget to do that before a reboot!
-	Then at each boot, /opt will be mounted as subvolume, separately from /.
+	Rememeber to do this before a reboot!
+	Then on every boot, /opt will be mounted as subvolume, separate from /.
 	
-	Note: the UUID of / (actually, its file system) is the output of:
+	Note: The UUID of / (actually, its filesystem) is the output of:
 	findmnt -no uuid /
 	EOF
 }
@@ -307,15 +305,15 @@ write_rollbacks() {
 rollbacks() {
 	clear
 	if [ "$HAVE_W3M" ]; then
-		echo >> "$rollbacks" 
-		echo "Press q to go back to the menu." >> "$rollbacks"
-		w3m -o confirm_qq=false "$rollbacks"
+		echo >> "$MOUNTPOINT/rollbacks" 
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/rollbacks"
+		w3m -o confirm_qq=false "$MOUNTPOINT/rollbacks"
 	elif [ "$HAVE_LESS" ]; then
-		echo >> "$rollbacks" 
-		echo "Press q to go back to the menu." >> "$rollbacks"
-		less "$rollbacks"
+		echo >> "$MOUNTPOINT/rollbacks" 
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/rollbacks"
+		less "$MOUNTPOINT/rollbacks"
 	else
-		cat "$rollbacks"
+		cat "$MOUNTPOINT/rollbacks"
 		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
@@ -327,15 +325,15 @@ rollbacks() {
 features() {
 	clear
 	if [ "$HAVE_W3M" ]; then
-		echo >> "$features" 
-		echo "Press q to go back to the menu." >> "$features"
-		w3m -o confirm_qq=false "$features"
+		echo >> "$MOUNTPOINT/features" 
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/features"
+		w3m -o confirm_qq=false "$MOUNTPOINT/features"
 	elif [ "$HAVE_LESS" ]; then
-		echo >> "$features" 
-		echo "Press q to go back to the menu." >> "$features"
-		less "$features"
+		echo >> "$MOUNTPOINT/features" 
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/features"
+		less "$MOUNTPOINT/features"
 	else
-		cat "$features"
+		cat "$MOUNTPOINT/features"
 		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
@@ -348,15 +346,17 @@ write_snapshots_cfg() {
 	# For each snapshot written by this script we write a boot entry in /boot/"$GRUB"/snapshots.cfg
 	# including the values of the variables set sourcing this file.
 	# Preserve the values of SNAP_NAME and SNAP_SHORT_DESC from the caller
-	THIS_SNAP_NAME="$SNAP_NAME"
-	THIS_SNAP_SHORT_DESC="$SNAP_SHORT_DESC"
-	rm -f /boot/"$GRUB"/snapshots.cfg
 	SNAP_NUMBER=0
-	list_of_snapshots=$(mktemp)
-	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$list_of_snapshots"
+	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$MOUNTPOINT/snapshots_list"
+	if [ ! -s "$MOUNTPOINT/snapshots_list" ]; then
+		rm -f "$MOUNTPOINT/$ROOT_SUBVOL/boot/grub/snapshots.cfg"
+		return
+	fi
+	rm -f "$MOUNTPOINT/snapshots.cfg"
 	while read -r i; do
 		unset INITRAMFS
-		. "$MOUNTPOINT"/.snapshots/"$i"/var/lib/snapshot_metadata
+		[ -f "$MOUNTPOINT"/.snapshots/"$i"/var/lib/snapshot_metadata ] \
+		&& . "$MOUNTPOINT"/.snapshots/"$i"/var/lib/snapshot_metadata
 		SNAP_NAME="$i"
 		SNAP_NUMBER=$((SNAP_NUMBER + 1))
 		if [ "$INITRAMFS" ]; then
@@ -367,7 +367,7 @@ write_snapshots_cfg() {
 			INITRD_PREFIX="/.snapshots/$SNAP_NAME/boot"
 			KERNEL_PREFIX="$(echo "$CMDLINE"|cut -d/ -f1)"
 			[ "$KERNEL_PREFIX" ] && INITRD_PREFIX="$KERNEL_PREFIX"
-			cat<<-eof>>/boot/"$GRUB"/snapshots.cfg
+			cat<<-eof>>"$MOUNTPOINT/snapshots.cfg"
 			menuentry 'snapshot $SNAP_NUMBER [$SNAP_NAME] ($SNAP_SHORT_DESC)' --hotkey=$SNAP_NUMBER {
 				insmod part_gpt
 				insmod part_msdos
@@ -380,7 +380,7 @@ write_snapshots_cfg() {
 			}
 			eof
 		else
-			cat<<-eof>>/boot/"$GRUB"/snapshots.cfg
+			cat<<-eof>>"$MOUNTPOINT/snapshots.cfg"
 			menuentry 'snapshot $SNAP_NUMBER [$SNAP_NAME] ($SNAP_SHORT_DESC)' --hotkey=$SNAP_NUMBER {
 				insmod part_gpt
 				insmod part_msdos
@@ -391,10 +391,11 @@ write_snapshots_cfg() {
 			}
 			eof
 		fi
-	done < "$list_of_snapshots"
-	rm -f "$list_of_snapshots"
-	SNAP_NAME="$THIS_SNAP_NAME"
-	SNAP_SHORT_DESC="$THIS_SNAP_SHORT_DESC"
+	done < "$MOUNTPOINT/snapshots_list"
+	while read -r i; do
+		cp "$MOUNTPOINT/snapshots.cfg" "$MOUNTPOINT/.snapshots/$i/boot/grub/"
+	done < "$MOUNTPOINT/snapshots_list"
+	cp "$MOUNTPOINT/snapshots.cfg" "$MOUNTPOINT/$ROOT_SUBVOL/boot/grub/"
 }
 display_grub_menu() {
 	# We write in list_boot_entries the description of each boot entry listed in
@@ -402,21 +403,18 @@ display_grub_menu() {
 	# indicating how to reach a given boot entry.
 	# The file $list_boot_entries, is then displayed (in w3m, used as a pager, if available).
 	clear
-	epoch1=$(epoch_time)
-	epoch2=$((epoch1 + 1))
-	listbootentries=/run/$epoch1
-	listsnapshots=/run/$epoch2
+	rm -f "$MOUNTPOINT/listbootentries"
 	sed -n "{
 		/submenu/,/^}$/ {
 		/^[[:space:]]*submenu /s%[[:space:]]*[^']*'\([^']*\)'.*%\1%p
 		/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%  \1%p
 		}
 		/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p
-	}" /boot/grub/grub.cfg >> "$listbootentries"
+	}" /boot/grub/grub.cfg >> "$MOUNTPOINT/listbootentries"
 	for i in $(find /boot/grub/* -prune -name "*.cfg"|grep -v grub.cfg); do
-		sed -n "/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p" "$i" >> "$listbootentries"
+		sed -n "/^[[:space:]]*\menuentry /s%[^']*'\([^']*\)'.*%\1%p" "$i" >> "$MOUNTPOINT/listbootentries"
 	done
-	if grep -q snapshot "$listbootentries"; then
+	if grep -q snapshot "$MOUNTPOINT/listbootentries"; then
 		SNAP="
 To boot directly a snapshot, you can just press the key bearing its number,
 if it is lower than 10.
@@ -429,21 +427,20 @@ After booting, the boot menu will be displayed as above.
 To navigate in the menu you will use the down and up arrow keys,
 then press Enter to use the selected boot entry.
 To display the boot entries inside a submenu, select it then press Enter.
-$SNAP" >> "$listbootentries"
+$SNAP" >> "$MOUNTPOINT/listbootentries"
 	if [ "$HAVE_W3M" ]; then
-		qecho "Press q to go back to the menu." >> "$listbootentries"
-		w3m -o confirm_qq=false "$listbootentries"
+		qecho "Press q to go back to the menu." >> "$MOUNTPOINT/listbootentries"
+		w3m -o confirm_qq=false "$MOUNTPOINT/listbootentries"
 	elif [ "$HAVE_LESS" ]; then
-		echo "Press q to go back to the menu." >> "$listbootentries"
-		less "$listbootentries"
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/listbootentries"
+		less "$MOUNTPOINT/listbootentries"
 	else
-		cat "$listbootentries"
+		cat "$MOUNTPOINT/listbootentries"
 		echo
 		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
-	rm "$listbootentries"
-	rm "$listsnapshots"
+	rm -f "$MOUNTPOINT/listbootentries"
 	menu
 }
 view_the_log() {
@@ -489,10 +486,10 @@ create_snapshot() {
 		read -r ANSWER
 		menu
 	fi
-	SNAP_NAME="$(current_time)"
+	SNAP_NAME="$(date +%Y-%m-%d:%Hh%Mm%Ss)"
 	NEW_SNAP_SHORT_DESC="on demand"
-	echo "By default the snapshot will be labeled \"on demand\" but you may"
-	echo "type a description instead (it should have between 5 and 40 characters)."
+	echo "By default the snapshot will be labeled \"on demand\" but you may type"
+	echo "a description instead (it should have between 5 and 40 characters)."
 	while true; do
 		printf "Description [on demand]: "
 		read -r -e ANSWER
@@ -549,7 +546,6 @@ create_snapshot() {
 	> "$MOUNTPOINT"/.snapshots/"$SNAP_NAME"/var/lib/snapshot_metadata
 	fi
 	[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/.snapshots/"$SNAP_NAME"/var/lib/snapshot_metadata
-	write_snapshots_cfg
 	log "$SNAP_NAME ($NEW_SNAP_SHORT_DESC) created"
 	echo "A snapshot has been created as \"$NEW_SNAP_SHORT_DESC\""
 	printf "Press Enter to go back to the menu "
@@ -562,7 +558,7 @@ create_snapshot_unattended() {
 	if [ ! "$KERNEL_FOUND" ]; then
 			log "Creation of a snapshot failed. Reason: running kernel not found in /boot."
 	fi
-	SNAP_NAME="$(current_time)"
+	SNAP_NAME="$(date +%Y-%m-%d:%Hh%Mm%Ss)"
 	SNAP_SHORT_DESC="on demand"
 	btrfs subvolume snapshot "$MOUNTPOINT/$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" 1>/dev/null
 	RES="$?"
@@ -612,8 +608,7 @@ create_snapshot_unattended() {
 }
 display_snapshots() {
 	SNAP_NUM=0
-	list_of_snapshots=$(mktemp)
-	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$list_of_snapshots"
+	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$MOUNTPOINT/list_of_snapshots"
 	while read -r i; do
 		if [ -f "$MOUNTPOINT"/.snapshots/"$i"/var/lib/snapshot_metadata ]; then 
 			. "$MOUNTPOINT"/.snapshots/"$i"/var/lib/snapshot_metadata
@@ -623,15 +618,13 @@ display_snapshots() {
 		else
 			echo "WARNING: no metadata written by absm for the snapshot $MOUNTPOINT/.snapshots/$i"
 		fi
-	done < "$list_of_snapshots"
+	done < "$MOUNTPOINT/list_of_snapshots"
 	unset SNAP_SHORT_DESC
-	rm -f "$list_of_snapshots"
+	rm -f "$MOUNTPOINT/list_of_snapshots"
 }
 numbered_snapshots() {
 	SNAP_NUM=0
-	list_of_snapshots=$(mktemp)
-	numberedsnapshots=$(mktemp)
-	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$list_of_snapshots"
+	btrfs sub list -s "$MOUNTPOINT" |grep "[.]snapshots"|sed "s;.* .snapshots/;;"|sort -r > "$MOUNTPOINT/list_of_snapshots"
 	while read -r i; do
 		SNAP_NUM=$((SNAP_NUM + 1))
 		if [ -f "$MOUNTPOINT/.snapshots/$i/var/lib/snapshot_metadata" ]; then
@@ -643,31 +636,29 @@ numbered_snapshots() {
 		else 
 			echo "$SNAP_NUM|$SNAP_NAME|(description not available)"
 		fi
-	done < "$list_of_snapshots" > "$numberedsnapshots"
+	done < "$MOUNTPOINT/list_of_snapshots" > "$MOUNTPOINT/numberedsnapshots"
 }
 list_snapshots() {
 	clear
-	listsnapshots=/run/$(epoch_time)
-	echo "List of the snapshots in your $OS_NAME system:" > "$listsnapshots"
-	display_snapshots >> "$listsnapshots"
-	echo >> "$listsnapshots"
+	echo "List of the snapshots in your $OS_NAME system:" > "$MOUNTPOINT/listsnapshots"
+	display_snapshots >> "$MOUNTPOINT/listsnapshots"
+	echo >> "$MOUNTPOINT/listsnapshots"
 	if [ "$HAVE_W3M" ]; then
-		echo "Press q to go back to the menu." >> "$listsnapshots"
-		w3m -o confirm_qq=false "$listsnapshots"
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/listsnapshots"
+		w3m -o confirm_qq=false "$MOUNTPOINT/listsnapshots"
 	elif [ "$HAVE_LESS" ]; then
-		echo "Press q to go back to the menu." >> "$listsnapshots"
-		less "$listsnapshots"
+		echo "Press q to go back to the menu." >> "$MOUNTPOINT/listsnapshots"
+		less "$MOUNTPOINT/listsnapshots"
 	else
-		cat "$listsnapshots"
+		cat "$MOUNTPOINT/listsnapshots"
 		printf "Press Enter to go back to the menu "
 		read -r ANSWER
 	fi
-	rm "$listsnapshots"
+	rm -f "$MOUNTPOINT/listsnapshots"
 	menu
 }
 delete_snapshot() {
 	# We allow to delete several snapshots in a row, one at a time, but not all in one shot.
-#	clear
 	# get a list of basenames of snapshots in $MOUNTPOINT/.sna^shots 
 	numbered_snapshots
 	echo "List of the snapshots in your $OS_NAME system:"
@@ -677,13 +668,13 @@ delete_snapshot() {
 		printf "Number of the snapshot to delete, or Enter to go back to the menu: "
 		read -r NUMBER
 		if [ ! "$NUMBER" ]; then
-			rm "$numberedsnapshots"
+			rm "$MOUNTPOINT/numberedsnapshots"
 			menu
 		fi
 		echo "$NUMBER"|grep -q '[^0123456789]' && echo "$NUMBER is not a number." && continue
 		# Find the name of snapshot numbered $NUMBER
-		SNAP_NAME=$(sed -n "/^$NUMBER|/s@[^|]*|\([^|]*\).*@\1@p" "$numberedsnapshots")
-		SNAP_SHORT_DESC=$(sed -n "/^$NUMBER|/s@.*|@@p" "$numberedsnapshots")
+		SNAP_NAME=$(sed -n "/^$NUMBER|/s@[^|]*|\([^|]*\).*@\1@p" "$MOUNTPOINT/numberedsnapshots")
+		SNAP_SHORT_DESC=$(sed -n "/^$NUMBER|/s@.*|@@p" "$MOUNTPOINT/numberedsnapshots")
 		[ ! "$SNAP_NAME" ] && echo "There is no snapshot number $NUMBER." && continue
 		break
 	done
@@ -697,7 +688,7 @@ delete_snapshot() {
 			YES) btrfs subvolume delete -C "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" 1>/dev/null
 				RET=$?
 				break;;
-			no) rm "$numberedsnapshots"
+			no) rm "$MOUNTPOINT/numberedsnapshots"
 				menu;;
 			*) :
 		esac
@@ -705,8 +696,7 @@ delete_snapshot() {
 	if [ "$RET" -eq 0 ]; then
 		echo
 		echo "snapshot $SNAP_NAME deleted."
-		write_snapshots_cfg
-		rm "$numberedsnapshots"
+		rm "$MOUNTPOINT/numberedsnapshots"
 		log "$SNAP_NAME deleted."
 		printf "Press Enter to go back to the menu "
 		read -r
@@ -722,19 +712,18 @@ delete_snapshot() {
 }
 restore_any_snapshot() {
 	clear
-	numberedsnapshots=/run/$(epoch_time)
-	numbered_snapshots >"$numberedsnapshots"
+	numbered_snapshots >"$MOUNTPOINT/numberedsnapshots"
 	echo "List of the snapshots in your $OS_NAME system:"
 	display_snapshots
 	while true; do
 		echo
 		printf "Number of the snapshot to restore, or Enter to go back to the menu: "
 		read -r NUMBER
-		[ ! "$NUMBER" ] && rm "$numberedsnapshots" && menu
+		[ ! "$NUMBER" ] && rm "$MOUNTPOINT/numberedsnapshots" && menu
 		echo "$NUMBER"|grep -q '[^0123456789]' && echo "$NUMBER is not a number." && continue
 		# Find the name of snapshot numbered $NUMBER
-		SNAP_NAME=$(sed -n "/^$NUMBER|/s@[^|]*|\([^|]*\).*@\1@p" "$numberedsnapshots")
-		SNAP_SHORT_DESC=$(sed -n "/^$NUMBER|/s@.*|@@p" "$numberedsnapshots")
+		SNAP_NAME=$(sed -n "/^$NUMBER|/s@[^|]*|\([^|]*\).*@\1@p" "$MOUNTPOINT/numberedsnapshots")
+		SNAP_SHORT_DESC=$(sed -n "/^$NUMBER|/s@.*|@@p" "$MOUNTPOINT/numberedsnapshots")
 		[ ! "$SNAP_NAME" ] && echo "There is no snapshot number $NUMBER." && continue
 		break
 	done
@@ -745,128 +734,22 @@ restore_any_snapshot() {
 		read -r ANSWER
 		unset FAILURE
 		[ ! "$(to_lower "$ANSWER")" = "yes" ] && menu 
-		NEW_SNAP_NAME="$(current_time)"
 		SNAP_SHORT_DESC="before restoration of \"$SNAP_NAME\""
 		echo
-		echo "Before restoration a new snapshot can be created to allow a"
+		echo "Before restoration a new snapshot will be created to allow a"
 		echo "rollback to the current state of the system, labeled by default:"
-		echo "    Before restoration of \"$SNAP_NAME\""
-		echo "Press Enter to accept this description or type another one"  
-		echo "between 5 and 40 characters long. But if you don't want to"
-		echo "create this snapshot type NO in capital letters."
+		echo "    Before restoring from \"$SNAP_NAME\""
+		echo "Press Enter to accept this description or type another one,"
+		echo "between 5 and 40 characters long."
 		while true; do
 			printf "Description (or NO): "
 			read -r -e ANSWER
 			[ "$ANSWER" = "NO" ] && break
 			[ ! "$ANSWER" ] && break
 			FORBIDDEN=$(printf %s "$ANSWER"|grep -e "[]'([)*]" -e '"')
-			if [ "$(printf %s "$ANSWER"|wc -c)" -gt 40 ]; then
-				echo "The description should have at most 40 characters."
-			elif [ "$(printf %s "$ANSWER"|wc -c)" -lt 5 ]; then
-				echo "The description should have at least 5 characters."
-			elif [ "$FORBIDDEN" ]; then
-				echo "The characters  [ ] ' \" ( ) are not allowed."
-			else
-				SNAP_SHORT_DESC="$ANSWER"
-				break
-			fi
-		done			
-		if [ ! "$ANSWER" = "NO" ]; then
-			# We create anew snapshot
-			mv "$MOUNTPOINT/$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"
-			R1=$?
-			if [ ! "$R1" -eq 0 ]; then
-				echo "Creating a new snapshot failed."
-				# snapshotting the root subvolume failed.
-				echo "As making a new snapshot of the root subvolume failed,"
-				echo "it can't be replaced by the snapshot taken on $SNAP_NAME"
-				log "As making a new snapshot of the root subvolume failed,"
-				log "it can't be replaced by the snapshot taken on $SNAP_NAME"
-				printf "Press Enter to go back to the menu "
-				read -r
-				rm "$numberedsnapshots"
-				menu					
-			fi 
-			# The new snapshot has been successfully created
-			# Let's write its metadata
-			mkdir -p "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib
-			KVER=$(uname -r)
-			unset INITRAMFS
-			# We first try to find an initramfs whose name matches that of the kernel
-			KERNEL="$(sed "s|[^=]*=||;s|[ ].*||;s|.*/||" /proc/cmdline)"
-			KERNEL_VERSION="$(echo "$KERNEL"|cut -d- -f 2-)"
-			ALL_INITRAMFS=$(find /boot/ -name "initr*${KERNEL_VERSION}*" -type f)
-			CMDLINE="$(sed "
-				s|[^=]*=||
-				s|.*/boot|/.snapshots/$NEW_SNAP_NAME/boot|
-				s|subvol=[[:graph:]]*|subvol=.snapshots/$NEW_SNAP_NAME|" /proc/cmdline)"
-			[ "$ALL_INITRAMFS" ] && INITRAMFS="$(echo "$ALL_INITRAMFS"|sed "s|.*/||"|head -n 1)"
-			# If no initramfs whose name includes the kernel version,try initrd.gz and initrd.img
-			[ ! "$INITRAMFS" ] && [ -f /boot/initrd.gz ] && INITRAMFS=/boot/initrd.gz
-			[ ! "$INITRAMFS" ] && [ -f /boot/initrd.img ] && INITRAMFS=/boot/initrd.img
-			# Still not found? Try a match with uname -r
-			if [ ! "$INITRAMFS" ]; then
-				ALL_INITRAMFS=$(find /boot/ -name "initr*" -type f|grep "$KVER")
-				[ "$ALL_INITRAMFS" ] && INITRAMFS=$(echo "$ALL_INITRAMFS"|head -n 1)
-			fi
-			if [ "$INITRAMFS" ]; then
-				echo "SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\" INITRAMFS=\"$INITRAMFS\"" \
-			> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
-			else
-				echo "$SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\"" \
-			> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
-			fi
-			[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
-		fi
-		# Restore the snapshot
-		mv "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" "$MOUNTPOINT/$ROOT_SUBVOL"
-		restored=$?
-		if [ "$restored" -eq 0 ]; then
-			# The restoration was successful.
-			write_snapshots_cfg
-			echo "The snapshot .snapshots/$SNAP_NAME has been restored."
-			echo "We recommend that you reboot now and in any case do not create,"
-			echo  "delete or restore a snapshot before rebooting."
-			log "$SNAP_NAME restored."
-			touch /run/restored_snapshot
-			closing
-		else
-			echo "The restoration failed."
-			log "$SNAP_NAME not restored."
-			closing
-		fi
-	done
-}
-restore_me() {
-	SNAP_NAME="$RUNNING_SNAPSHOT"
-	unset SHORT_DESC
-	LOGGED_DESC="$MOUNTPOINT/.snapshots/var/lib/snapshots_metadata/$SNAP_SHORT_DESC"
-	[ "$LOGGED_DESC" ] && SHORT_DESC=" ($LOGGED_DESC)"
-	echo "Restore the running snapshot dated ${SNAP_NAME}${SHORT_DESC}?"
-	printf "To confirm type yes, else press Enter: "
-	read -r ANSWER
-	unset FAILURE
-	if [ "$(to_lower "$ANSWER")" = "yes" ] ; then
-		NEW_SNAP_NAME="$(current_time)"
-		# Move the root subvolume elsewhere. THis will make a snapshot of it.
-		mv "$MOUNTPOINT"/"$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"
-		R1=$?
-		SNAP_SHORT_DESC="before restoration of \"$SNAP_NAME\""
-		echo
-		echo "Before restoration a new snapshot can be created to allow a"
-		echo "rollback to the current state of the system, labeled by default:"
-		echo "    Before restoration of \"$SNAP_NAME\""
-		echo "Press Enter to accept this description or type another one"  
-		echo "between 5 and 40 characters long. But ff you don't want to"
-		echo "create this snapshot type NO in capital letters."
-		while true; do
-			printf "Description (or NO): "
-			read -r -e ANSWER
-			[ "$ANSWER" = "NO" ] && break
-			[ ! "$ANSWER" ] && break
-			FORBIDDEN=$(printf %s "$ANSWER"|grep -e "[]'([)*]" -e '"')
-			if [ "$(printf %s "$ANSWER"|wc -c)" -gt 40 ]; then
-				echo "The description should have at most 40 characters."
+			DESC_LENGTH="$(printf %s "$ANSWER"|wc -c)"
+			if [ "$DESC_LENGTH" -gt 40 ]; then
+				echo "The description should have at most 40 characters, make it $((DESC_LENGTH -40)) shorter."
 			elif [ "$(printf %s "$ANSWER"|wc -c)" -lt 5 ]; then
 				echo "The description should have at least 5 characters."
 			elif [ "$FORBIDDEN" ]; then
@@ -876,83 +759,138 @@ restore_me() {
 				break
 			fi
 		done	
-		if [ ! "$ANSWER" = "NO" ]; then
-			# We create anew snapshot
-			mv "$MOUNTPOINT/$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"
-			R1=$?
-			if [ ! "$R1" -eq 0 ]; then
-				echo "Creating a new snapshot failed."
-				# snapshotting the root subvolume failed.
-				echo "As making a new snapshot of the root subvolume failed,"
-				echo "it can't be replaced by the snapshot taken on $SNAP_NAME"
-				log "As making a new snapshot of the root subvolume failed,"
-				log "it can't be replaced by the snapshot taken on $SNAP_NAME"
-				printf "Press Enter to go back to the menu "
-				read -r
-				rm "$numberedsnapshots"
-				menu					
-			fi 
-			# The new snapshot has been successfully created
-			# Let's write its metadata
-			mkdir -p "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib
-			KVER=$(uname -r)
-			unset INITRAMFS
-			# We first try to find an initramfs whose name matches that of the kernel
-			KERNEL="$(sed "s|[^=]*=||;s|[ ].*||;s|.*/||" /proc/cmdline)"
-			KERNEL_VERSION="$(echo "$KERNEL"|cut -d- -f 2-)"
-			ALL_INITRAMFS=$(find /boot/ -name "initr*${KERNEL_VERSION}*" -type f)
-			CMDLINE="$(sed "
-				s|[^=]*=||
-				s|.*/boot|/.snapshots/$NEW_SNAP_NAME/boot|
-				s|subvol=[[:graph:]]*|subvol=.snapshots/$NEW_SNAP_NAME|" /proc/cmdline)"
-			[ "$ALL_INITRAMFS" ] && INITRAMFS="$(echo "$ALL_INITRAMFS"|sed "s|.*/||"|head -n 1)"
-			# If no initramfs whose name includes the kernel version,try initrd.gz and initrd.img
-			[ ! "$INITRAMFS" ] && [ -f /boot/initrd.gz ] && INITRAMFS=/boot/initrd.gz
-			[ ! "$INITRAMFS" ] && [ -f /boot/initrd.img ] && INITRAMFS=/boot/initrd.img
-			# Still not found? Try a match with uname -r
-			if [ ! "$INITRAMFS" ]; then
-				ALL_INITRAMFS=$(find /boot/ -name "initr*" -type f|grep "$KVER")
-				[ "$ALL_INITRAMFS" ] && INITRAMFS=$(echo "$ALL_INITRAMFS"|head -n 1)
-			fi
-			if [ "$INITRAMFS" ]; then
-				echo "SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\" INITRAMFS=\"$INITRAMFS\"" \
-			> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
-			else
-				echo "$SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\"" \
-			> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
-			fi
-			[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
+		# We create a new snapshot
+		NEW_SNAP_NAME="$(date +%Y-%m-%d:%Hh%Mm%Ss)"
+		mv "$MOUNTPOINT/$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"
+		# Write its metadata.
+		mkdir -p "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib
+		KVER=$(uname -r)
+		unset INITRAMFS
+		# We first try to find an initramfs whose name matches that of the kernel
+		KERNEL="$(sed "s|[^=]*=||;s|[ ].*||;s|.*/||" /proc/cmdline)"
+		KERNEL_VERSION="$(echo "$KERNEL"|cut -d- -f 2-)"
+		ALL_INITRAMFS=$(find /boot/ -name "initr*${KERNEL_VERSION}*" -type f)
+		CMDLINE="$(sed "
+			s|[^=]*=||
+			s|.*/boot|/.snapshots/$NEW_SNAP_NAME/boot|
+			s|subvol=[[:graph:]]*|subvol=.snapshots/$NEW_SNAP_NAME|" /proc/cmdline)"
+		[ "$ALL_INITRAMFS" ] && INITRAMFS="$(echo "$ALL_INITRAMFS"|sed "s|.*/||"|head -n 1)"
+		# If no initramfs whose name includes the kernel version,try initrd.gz and initrd.img
+		[ ! "$INITRAMFS" ] && [ -f /boot/initrd.gz ] && INITRAMFS=/boot/initrd.gz
+		[ ! "$INITRAMFS" ] && [ -f /boot/initrd.img ] && INITRAMFS=/boot/initrd.img
+		# Still not found? Try a match with uname -r
+		if [ ! "$INITRAMFS" ]; then
+			ALL_INITRAMFS=$(find /boot/ -name "initr*" -type f|grep "$KVER")
+			[ "$ALL_INITRAMFS" ] && INITRAMFS=$(echo "$ALL_INITRAMFS"|head -n 1)
 		fi
-		# Restore the snapshot
-		mv "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" "$MOUNTPOINT/$ROOT_SUBVOL"
-		restored=$?
-		if [ "$restored" -eq 0 ]; then
-			# The restoration was successful.
-			write_snapshots_cfg
-			cat "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/boot/grub/snapshots.cfg > "$MOUNTPOINT"/"$ROOT_SUBVOL"/boot/grub/snapshots.cfg || exit
-			echo "The snapshot .snapshots/$SNAP_NAME has been restored."
-			echo "We recommend that you reboot now and in any case do not create,"
-			echo  "delete or restore a snapshot before rebooting."
-			log "$SNAP_NAME restored."
-			touch /run/restored_snapshot
-			closing
+		if [ "$INITRAMFS" ]; then
+			echo "SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\" INITRAMFS=\"$INITRAMFS\"" \
+		> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
 		else
-			echo "The restoration failed."
-			log "$SNAP_NAME not restored."
-			closing
+			echo "$SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\"" \
+		> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
 		fi
+		[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
+		# Restore the snapshot
+		rm -f "$MOUNTPOINT"/.snapshots/"$SNAP_NAME"/var/lib/snapshot_metadata
+		mv "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" "$MOUNTPOINT/$ROOT_SUBVOL"
+		echo "The snapshot .snapshots/$SNAP_NAME has been restored."
+		echo "We recommend that you reboot now and in any case do not create,"
+		echo  "delete or restore a snapshot before rebooting."
+		log "$SNAP_NAME restored."
+		touch /run/restored_snapshot
+		closing
+	done
+}
+restore_me() {
+	SNAP_NAME="$RUNNING_SNAPSHOT"
+	. /var/lib/snapshot_metadata
+	echo "Restore the running snapshot dated ${SNAP_NAME} (${SNAP_SHORT_DESC})?"
+	printf "To confirm type yes, else press Enter: "
+	read -r ANSWER
+	unset FAILURE
+	[ ! "$(to_lower "$ANSWER")" = "yes" ] && menu
+	SNAP_SHORT_DESC="before restoration of \"$SNAP_NAME\""
+	echo
+	echo "Before restoration a new snapshot can be taken to allow a"
+	echo "rollback to the current state of the system, labeled by default:"
+	echo "    Before restoring from \"$SNAP_NAME\""
+	echo "Press Enter to accept this description or type another description,"  
+	echo "between 5 and 40 characters long. But if you don't want to take"
+	echo "a new snapshot type NO in capital letters."
+	while true; do
+		printf "Description (or NO): "
+		read -r -e ANSWER
+		[ "$ANSWER" = "NO" ] && SNAP_SHORT_DESC="$ANSWER" && break
+		[ ! "$ANSWER" ] && break
+		FORBIDDEN=$(printf %s "$ANSWER"|grep -e "[]'([)*]" -e '"')
+		DESC_LENGTH="$(printf %s "$ANSWER"|wc -c)"
+		if [ "$DESC_LENGTH" -gt 40 ]; then
+			echo "The description should have at most 40 characters, make it $((DESC_LENGTH -40)) shorter."
+		elif [ "$(printf %s "$ANSWER"|wc -c)" -lt 5 ]; then
+			echo "The description should have at least 5 characters."
+		elif [ "$FORBIDDEN" ]; then
+			echo "The characters  [ ] ' \" ( ) are not allowed."
+		else
+			SNAP_SHORT_DESC="$ANSWER"
+			break
+		fi
+	done	
+	# We create a new snapshot
+	NEW_SNAP_NAME="$(date +%Y-%m-%d:%Hh%Mm%Ss)"
+	mv "$MOUNTPOINT/$ROOT_SUBVOL" "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"
+	# Let's write its metadata if we will keep it
+		if [ ! "$ANSWER" = "NO" ]; then
+		mkdir -p "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib
+		KVER=$(uname -r)
+		unset INITRAMFS
+		# We first try to find an initramfs whose name matches that of the kernel
+		KERNEL="$(sed "s|[^=]*=||;s|[ ].*||;s|.*/||" /proc/cmdline)"
+		KERNEL_VERSION="$(echo "$KERNEL"|cut -d- -f 2-)"
+		ALL_INITRAMFS=$(find /boot/ -name "initr*${KERNEL_VERSION}*" -type f)
+		CMDLINE="$(sed "
+			s|[^=]*=||
+			s|.*/boot|/.snapshots/$NEW_SNAP_NAME/boot|
+			s|subvol=[[:graph:]]*|subvol=.snapshots/$NEW_SNAP_NAME|" /proc/cmdline)"
+		[ "$ALL_INITRAMFS" ] && INITRAMFS="$(echo "$ALL_INITRAMFS"|sed "s|.*/||"|head -n 1)"
+		# If no initramfs whose name includes the kernel version,try initrd.gz and initrd.img
+		[ ! "$INITRAMFS" ] && [ -f /boot/initrd.gz ] && INITRAMFS=/boot/initrd.gz
+		[ ! "$INITRAMFS" ] && [ -f /boot/initrd.img ] && INITRAMFS=/boot/initrd.img
+		# Still not found? Try a match with uname -r
+		if [ ! "$INITRAMFS" ]; then
+			ALL_INITRAMFS=$(find /boot/ -name "initr*" -type f|grep "$KVER")
+			[ "$ALL_INITRAMFS" ] && INITRAMFS=$(echo "$ALL_INITRAMFS"|head -n 1)
+		fi
+		if [ "$INITRAMFS" ]; then
+			echo "SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\" INITRAMFS=\"$INITRAMFS\"" \
+		> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
+		else
+			echo "$SNAP_SHORT_DESC=\"$SNAP_SHORT_DESC\" KVER=\"$KVER\" CMDLINE=\"$CMDLINE\"" \
+		> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
+		fi
+		[ "$LONGDESC" ] && echo "LONGDESC=\"$LONGDESC\"" >> "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME"/var/lib/snapshot_metadata
 	fi
+	# Restore the running snapshot	
+	rm -f "$MOUNTPOINT"/.snapshots/"$SNAP_NAME"/var/lib/snapshot_metadata
+	mv "$MOUNTPOINT"/.snapshots/"$SNAP_NAME" "$MOUNTPOINT/$ROOT_SUBVOL"
+	echo "The snapshot .snapshots/$SNAP_NAME has been restored."
+	echo "We recommend that you reboot now and in any case do not create,"
+	echo  "delete or restore a snapshot before rebooting."
+	log "$SNAP_NAME restored."
+	touch /run/restored_snapshot
+	# Remove the new snapshot if user does not want it. 
+	[ "$ANSWER" = "NO" ] && btrfs subvolume delete -C "$MOUNTPOINT"/.snapshots/"$NEW_SNAP_NAME" 1>/dev/null
+	closing
 }
 closing() {
 	write_snapshots_cfg
-	umount -q "$MOUNTPOINT"
+	(cd "$MOUNTPOINT" || exit
+	rm -f features rollbacks snapshots.cfg snapshots_list numberedsnapshots
+	)
+	umount "$MOUNTPOINT"
 	rmdir "$MOUNTPOINT"
-	rm -f "$list_of_snapshots"
-	rm -f "$numberedsnapshots"
-	rm -f "$features"
-	rm -f "$rollbacks"
-	rm -f "$listsnapshots"
-	rm -f "$numberedsnapshots"
+	#  listsnapshots
+	#  list_of_snapshots
 	trap - INT
 	exit
 }
@@ -966,40 +904,40 @@ menu() {
 	# until after a reboot. We write an indicator in /run for that, so it will vanish
 	# after a reboot.
 	unset RESTORED
+	unset SNAPS
 	[ -f /run/restored_snapshot ] && RESTORED="yes"
 	write_snapshots_cfg
+	[ -s "$MOUNTPOINT/snapshots_list" ] && SNAPS="yes"
 	echo "Welcome to the absm snapshots manager."
-	echo
 	while true; do
 		echo "To choose an action, press one of the letters indicated below then Enter:"
 		[ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && echo "C: Create a snapshot."
-		[ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && [ -f /boot/"$GRUB"/snapshots.cfg ] && echo "D: Delete a snapshot."
-		echo "F: Features of absm."
-		echo "G: Display GRUB's boot menu."
+		[ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && [ "$SNAPS" ] && echo "D: Delete a snapshot."
+		echo "P: Presentation and features."
+		echo "G: Display GRUB's boot menu as it will appear at next boot."
 		echo "H: How-to use snapshots and manage rollbacks."
-		[ -f /boot/"$GRUB"/snapshots.cfg ] && echo "L: List the snapshots."
-		[ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && [ -f /boot/"$GRUB"/snapshots.cfg ] && echo "R: Restore a snapshot."
+		[ $SNAPS ] && echo "L: List the snapshots."
+		[ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && [ "$SNAPS" ] && echo "R: Restore a snapshot."
 		[ "$IS_SNAP" ] && [ ! "$RESTORED" ] && echo "R: Restore the snapshot in use."
 		echo "V: View the log of creation, deletion and restoration of snapshots."
 		printf "Your choice (or just press Enter to quit): "
 		read -r ANSWER
 		case $(to_lower "$ANSWER") in
-			l) if [ -f /boot/"$GRUB"/snapshots.cfg ]; then list_snapshots; else menu; fi;;
+			l) if [ $SNAPS ]; then list_snapshots; else menu; fi;;
 			c) if [ ! "$IS_SNAP" ] && [ ! "$RESTORED" ]; then create_snapshot; else menu; fi;;
-			d) if [ ! "$IS_SNAP" ] && [ ! "$RESTORED" ]; then delete_snapshot; else menu; fi;;
-			f) features;;
+			d) if [ ! "$IS_SNAP" ] && [ ! "$RESTORED" ] && [ "$SNAPS" ]; then delete_snapshot; else menu; fi;;
+			p) features;;
 			g) display_grub_menu;;
 			h) rollbacks;;
-			r) if [ ! "$RESTORED" ]; then
+			r) if [ ! "$RESTORED" ] && [ "$SNAPS" ]; then
 				if  [ ! "$IS_SNAP" ]; then
 					restore_any_snapshot; menu
 				else
-					restore_me;
+					restore_me; menu
 				fi
 			fi;;
 			v) view_the_log;;
-			*) clear
-			closing
+			*) clear; closing
 		esac
 	done
 }
