@@ -15,8 +15,8 @@ This script allows to take snapshots of the root subvolume of a system
 mounted as /, allowing to boot off one of them from the GRUB boot menu,
 and also to rollback the system restoring one of them.
 
-A new snapshot is always taken just before a rollback of the system so that
-it can be reverted.
+A new snapshot is taken just before a rollback to enable it being rolled back.
+This is optional if the snapshot being rolled back is runnning.
 
 It require that the directories / and /home be mounted as btrfs subvolumes.
 Currently it takes snapshots of / as a whole, /home excluded.
